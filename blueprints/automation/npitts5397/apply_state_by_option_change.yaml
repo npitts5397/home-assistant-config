@@ -1,0 +1,156 @@
+blueprint:
+  name: Apply State by Option Change
+  domain: automation
+  author: Nathaniel Pitts
+  source_url: https://github.com/npitts5397/ha_custom/blob/main/blueprints/apply_state_by_option_change.yaml
+  homeassistant:
+    min_version: 2024.8.0
+  description: |
+    Sets the on/off state of targeted entities based on the selected option of an input select. Targeted
+    entities are defined in a mapping of input select options to two targets: 'on' and 'off'. Each target
+    can specify a single or list of device IDs, entity IDs, label IDs, or area IDs to which to apply the
+    state change.
+
+    This blueprint is useful for scenarios where you want to control multiple entities based on a single
+    input select option, such as setting the state of various lights, switches, or other devices.
+
+    Version history:
+      * 1.0.0 - HA-141 - Initial version.
+  input:
+    trigger_entities:
+      name: Trigger Entities
+      icon: mdi:form-select
+      description: Entities with string data for triggering this automation.
+      collapsed: false
+      input:
+        input_select_entity:
+          name: Input Select Entity
+          description: (Required) The input select entity whose options related to desired state.
+          selector:
+            entity:
+              domain: input_select
+    option_to_target_config:
+      name: Options to Labels
+      icon: mdi:label-multiple
+      description: Inputs related to option to target mappings.
+      collapsed: false
+      input:
+        option_target_map:
+          name: Option to Label Map
+          description: >
+            (Required) Define a mapping of input_select options to two targets.
+            Example:
+            {
+              "OptionA": {
+                "on": {
+                  "label_id": "optiona_on_label_name"
+                },
+                "off": {
+                  "label_id": ["optiona_off_label_name"]
+                }
+              },
+              "OptionB": {
+                "on": {
+                  "label_id": ["optionb_on_label_name", "optionb_additional_on_label_name"],
+                  "area_id": "optional_area_id_for_area_application"
+                },
+                "off": {
+                  "label_id": "optionb_off_label_name"
+                }
+              },
+              "OptionC": {
+                "on": {
+                  "label_id": ["optionc_on_label_name", "optionc_additional_on_label_name"]
+                },
+                "off": {
+                  "label_id": "optionc_off_label_name"
+                }
+              }
+            }
+          selector:
+            text:
+              multiline: true
+          default: >
+            {
+              "OptionA": {
+                "on": {
+                  "label_id": "optiona_on_label_name"
+                },
+                "off": {
+                  "label_id": ["optiona_off_label_name"]
+                }
+              },
+              "OptionB": {
+                "on": {
+                  "label_id": ["optionb_on_label_name", "optionb_additional_on_label_name"],
+                  "area_id": "optional_area_id_for_area_application"
+                },
+                "off": {
+                  "label_id": "optionb_off_label_name"
+                }
+              },
+              "OptionC": {
+                "on": {
+                  "label_id": ["optionc_on_label_name", "optionc_additional_on_label_name"]
+                },
+                "off": {
+                  "label_id": "optionc_off_label_name"
+                }
+              }
+            }
+variables:
+  input_select_entity: !input input_select_entity
+  option_target_map: !input option_target_map
+  selected_option: "{{ states(input_select_entity) }}"
+  target: "{{ option_target_map | from_json(default={}) }}"
+  target_config: "{{ target.get(selected_option, {}) }}"
+  on_targets: >-
+    {% set ns = namespace(result = {}) %}
+    {% set on_config = target_config.get('on') %}
+    {% if on_config is not none %}
+      {% for key, value in on_config.items() %}
+        {% if value is string %}
+          {% set ns.result = ns.result | combine({key: [value]}) %}
+        {% elif value is iterable and value is not string %}
+          {% set ns.result = ns.result | combine({key: value}) %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {{ ns.result }}
+  off_targets: >-
+    {% set ns = namespace(result = {}) %}
+    {% set off_config = target_config.get('off') %}
+    {% if off_config is not none %}
+      {% for key, value in off_config.items() %}
+        {% if value is string %}
+          {% set ns.result = ns.result | combine({key: [value]}) %}
+        {% elif value is iterable and value is not string %}
+          {% set ns.result = ns.result | combine({key: value}) %}
+        {% endif %}
+      {% endfor %}
+    {% endif %}
+    {{ ns.result }}
+mode: restart
+trigger:
+  - alias: Input select updated
+    id: input_select_updated
+    platform: state
+    entity_id: !input input_select_entity
+action:
+  - choose:
+      - conditions:
+          - "{{ (on_targets | count) > 0 or (off_targets | count) > 0 }}"
+        sequence:
+          - if: "{{ on_targets | length > 0 }}"
+            then:
+              - service: homeassistant.turn_on
+                target: "{{ on_targets }}"
+          - if: "{{ off_targets | length > 0 }}"
+            then:
+              - service: homeassistant.turn_off
+                target: "{{ off_targets }}"
+    default:
+      - service: system_log.write
+        data:
+          message: "[{{ this.entity_id }}]: [{{ input_select_entity }}] updated to [{{ selected_option }}] which has no 'on' or 'off' targets defined."
+          level: warning
